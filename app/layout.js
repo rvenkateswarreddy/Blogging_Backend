@@ -20,14 +20,15 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+      <head>
+        {/* Place any custom head tags or meta here */}
+      </head>
+      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         <Script
           async
           src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-9174140322510860"
           crossOrigin="anonymous"
-        ></Script>
+        />
         {children}
       </body>
     </html>

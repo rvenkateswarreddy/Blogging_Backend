@@ -5,7 +5,7 @@ import { signInWithEmailAndPassword } from "firebase/auth";
 import { BiSolidHappyHeartEyes } from "react-icons/bi";
 import { PiSmileyXEyesBold } from "react-icons/pi";
 import { useRouter } from "next/navigation";
-import { auth } from "@/FIrebaseConfig";
+import { auth } from "../FIrebaseConfig";
 
 const Page = () => {
   const [email, setEmail] = useState("");

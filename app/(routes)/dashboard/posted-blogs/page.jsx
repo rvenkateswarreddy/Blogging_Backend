@@ -1,254 +1,203 @@
 "use client";
 import React, { useEffect, useState } from "react";
-import {
-  collection,
-  getDocs,
-  deleteDoc,
-  doc,
-  Timestamp,
-  updateDoc,
-} from "firebase/firestore";
-import Image from "next/image";
-import { db } from "@/FIrebaseConfig";
+import { collection, getDocs, query, orderBy } from "firebase/firestore";
+import { db } from "../../../../FIrebaseConfig";
 
-const CATEGORIES = [
-  "AI & Tech",
-  "Programming",
-  "Machine Learning",
-  "Data Science",
-  "Web Development",
-  "Cloud",
-  "DevOps",
-  "Mobile Apps",
-  "Cybersecurity",
-  "UI/UX",
-  "Productivity",
-  "Business",
-  "Startup",
-  "Blockchain",
-  "Healthcare",
-  "Education",
-  "Finance",
-  "Marketing",
-  "Gaming",
-  "Other",
-];
-
-function formatDate(ts) {
-  if (!ts) return "";
-  if (typeof ts === "string") return ts;
-  if (ts instanceof Timestamp) return ts.toDate().toLocaleDateString();
-  if (ts.seconds) return new Date(ts.seconds * 1000).toLocaleDateString();
-  return "";
+// Render a single content block (matching BlogForm: handles table as array of objects)
+function renderBlock(block, idx) {
+  switch (block.type) {
+    case "Heading":
+      return (
+        <h2 key={idx} style={{ fontSize: 28, fontWeight: 700, margin: "24px 0 12px", color: "#334155" }}>
+          {block.text}
+        </h2>
+      );
+    case "Subheading":
+      return (
+        <h3 key={idx} style={{ fontSize: 20, fontWeight: 600, margin: "14px 0 7px", color: "#2563eb" }}>
+          {block.text}
+        </h3>
+      );
+    case "Paragraph":
+      return (
+        <p key={idx} style={{ margin: "8px 0", fontSize: 17, color: "#0f172a" }}>
+          {block.text}
+        </p>
+      );
+    case "List":
+      return (
+        <ul key={idx} style={{ paddingLeft: 24, margin: "8px 0", fontSize: 17 }}>
+          {block.items.filter(Boolean).map((item, i) => (
+            <li key={i} style={{ marginBottom: 5, color: "#334155" }}>{item}</li>
+          ))}
+        </ul>
+      );
+    case "Table":
+      // Table: {headers: [...], rows: [ {header:value,...}, ... ]}
+      return (
+        <table key={idx} style={{
+          borderCollapse: "collapse", margin: "18px 0", width: "100%", background: "#f0f9ff"
+        }}>
+          <thead>
+            <tr>
+              {(block.headers || []).map((header, h) =>
+                <th key={h} style={{
+                  padding: "8px 14px",
+                  border: "1.5px solid #7dd3fc",
+                  background: "#bae6fd",
+                  color: "#0e7490",
+                  fontWeight: 600,
+                }}>{header}</th>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {(block.rows || []).map((row, r) =>
+              <tr key={r}>
+                {(block.headers || []).map((header, c) =>
+                  <td key={c} style={{
+                    padding: "8px 14px",
+                    border: "1.5px solid #7dd3fc",
+                    color: "#0e7490"
+                  }}>{row[header]}</td>
+                )}
+              </tr>
+            )}
+          </tbody>
+        </table>
+      );
+    case "Image":
+      return block.url ? (
+        <img
+          key={idx}
+          src={block.url}
+          alt={block.alt}
+          style={{ maxWidth: "100%", borderRadius: 10, boxShadow: "0 2px 14px #99f6e4", margin: "16px 0" }}
+        />
+      ) : null;
+    case "Link":
+      return (
+        <a
+          key={idx}
+          href={block.href}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            color: "#0ea5e9",
+            textDecoration: "underline",
+            fontWeight: 500,
+            fontSize: 17,
+            margin: "8px 0",
+            display: "inline-block"
+          }}
+        >
+          {block.text}
+        </a>
+      );
+    default:
+      return null;
+  }
 }
 
-export default function Page() {
+export default function BlogList() {
   const [blogs, setBlogs] = useState([]);
-  const [expanded, setExpanded] = useState({});
-  const [editing, setEditing] = useState(null);
-  const [editData, setEditData] = useState({});
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  // Fetch blogs from Firestore
   useEffect(() => {
-    const fetchBlogs = async () => {
-      const querySnapshot = await getDocs(collection(db, "blogs"));
-      const data = [];
-      querySnapshot.forEach((doc) => {
-        data.push({ id: doc.id, ...doc.data() });
-      });
-      // Sort by date descending
-      data.sort((a, b) => b.date?.seconds - a.date?.seconds);
+    async function fetchBlogs() {
+      setLoading(true);
+      const q = query(collection(db, "blogs-testing"), orderBy("date", "desc"));
+      const snapshot = await getDocs(q);
+      const data = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
       setBlogs(data);
-    };
+      setLoading(false);
+    }
     fetchBlogs();
   }, []);
 
-  // Toggle expanded card
-  const handleExpand = (id) => {
-    setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
-  };
-
-  // Delete blog
-  const handleDelete = async (id) => {
-    if (!window.confirm("Are you sure you want to delete this post?")) return;
-    await deleteDoc(doc(db, "blogs", id));
-    setBlogs((prev) => prev.filter((b) => b.id !== id));
-  };
-
-  // Edit blog
-  const handleEdit = (blog) => {
-    setEditing(blog.id);
-    setEditData({
-      ...blog,
-      date: blog.date
-        ? blog.date instanceof Timestamp
-          ? blog.date.toDate().toISOString().slice(0, 10)
-          : blog.date
-        : "",
-    });
-  };
-
-  // Save edit
-  const handleSaveEdit = async () => {
-    setLoading(true);
-    await updateDoc(doc(db, "blogs", editing), {
-      ...editData,
-      date: editData.date
-        ? Timestamp.fromDate(new Date(editData.date))
-        : Timestamp.now(),
-    });
-    setBlogs((prev) =>
-      prev.map((b) =>
-        b.id === editing
-          ? {
-              ...b,
-              ...editData,
-              date: Timestamp.fromDate(new Date(editData.date)),
-            }
-          : b
-      )
-    );
-    setEditing(null);
-    setEditData({});
-    setLoading(false);
-  };
-
   return (
-    <div className="max-w-5xl mx-auto p-4 sm:p-8">
-      <h1 className="text-4xl font-extrabold bg-gradient-to-r from-fuchsia-600 via-cyan-400 to-blue-600 bg-clip-text text-transparent drop-shadow mb-10 text-center">
-        Your Posted Blogs
+    <div style={{ maxWidth: 850, margin: "0 auto", padding: 24 }}>
+      <h1 style={{
+        fontSize: 36,
+        fontWeight: 800,
+        background: "linear-gradient(90deg,#d946ef,#06b6d4,#3b82f6)",
+        WebkitBackgroundClip: "text",
+        WebkitTextFillColor: "transparent",
+        marginBottom: 36,
+        textAlign: "center"
+      }}>
+        Latest Blogs
       </h1>
-      {blogs.length === 0 && (
-        <div className="text-gray-500 text-center text-lg bg-gradient-to-r from-fuchsia-50 via-cyan-50 to-blue-50 rounded-xl shadow p-6">
-          No blogs posted yet.
-        </div>
-      )}
-
-      <div className="space-y-8">
-        {blogs.map((blog) =>
-          editing === blog.id ? (
-            <div
-              key={blog.id}
-              className="p-6 rounded-xl shadow-2xl border-2 border-yellow-200 bg-yellow-50 text-black space-y-4"
-            >
-              <input
-                className="input input-bordered w-full font-bold text-lg"
-                value={editData.title}
-                onChange={(e) =>
-                  setEditData((d) => ({ ...d, title: e.target.value }))
-                }
-              />
-              <textarea
-                className="textarea textarea-bordered w-full"
-                value={editData.summary}
-                onChange={(e) =>
-                  setEditData((d) => ({ ...d, summary: e.target.value }))
-                }
-              />
-              <textarea
-                className="textarea textarea-bordered w-full"
-                value={editData.description}
-                onChange={(e) =>
-                  setEditData((d) => ({ ...d, description: e.target.value }))
-                }
-              />
-              <select
-                className="select select-bordered w-full"
-                value={editData.category}
-                onChange={(e) =>
-                  setEditData((d) => ({ ...d, category: e.target.value }))
-                }
-              >
-                {CATEGORIES.map((cat) => (
-                  <option key={cat}>{cat}</option>
-                ))}
-              </select>
-              <input
-                className="input input-bordered w-full"
-                type="date"
-                value={editData.date}
-                onChange={(e) =>
-                  setEditData((d) => ({ ...d, date: e.target.value }))
-                }
-              />
-              <div className="flex gap-3 mt-2">
-                <button
-                  className="btn bg-gradient-to-r from-cyan-500 to-blue-500 text-white font-bold"
-                  onClick={handleSaveEdit}
-                  disabled={loading}
-                >
-                  {loading ? "Saving..." : "Save"}
-                </button>
-                <button
-                  className="btn bg-gradient-to-r from-gray-200 to-gray-100 text-black border border-gray-300"
-                  onClick={() => setEditing(null)}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div
-              key={blog.id}
-              className="p-6 rounded-xl shadow-xl border-2 border-fuchsia-100 bg-gradient-to-br from-white via-fuchsia-50 to-blue-50 flex flex-col sm:flex-row gap-6 text-black hover:scale-[1.01] hover:shadow-2xl transition-transform"
-            >
+      {loading ? (
+        <div style={{ textAlign: "center", color: "#888" }}>Loading...</div>
+      ) : blogs.length === 0 ? (
+        <div style={{ textAlign: "center", color: "#888" }}>No blogs found.</div>
+      ) : (
+        blogs.map((blog) => (
+          <div
+            key={blog.id}
+            style={{
+              background: "#fff",
+              borderRadius: 16,
+              marginBottom: 32,
+              boxShadow: "0 4px 32px #e0e7ff55",
+              border: "1px solid #f5d0fe",
+              padding: 24,
+              position: "relative",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "flex-start", marginBottom: 16, gap: 20 }}>
               {blog.image && (
-                <div className="w-full sm:w-56 h-56 relative rounded-xl overflow-hidden border-2 border-cyan-200 shadow-md">
-                  <Image
-                    src={blog.image}
-                    alt={blog.title}
-                    fill
-                    className="object-cover"
-                  />
-                </div>
+                <img
+                  src={blog.image}
+                  alt={blog.title}
+                  style={{ width: 180, height: 120, objectFit: "cover", borderRadius: 12, border: "2px solid #22d3ee" }}
+                />
               )}
-              <div className="flex-1 flex flex-col">
-                <div className="flex items-center gap-3 text-xs font-semibold mb-2">
-                  <span className="uppercase font-bold bg-gradient-to-r from-cyan-400 to-fuchsia-400 bg-clip-text text-transparent">
-                    {blog.category}
-                  </span>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <span style={{
+                    fontSize: 22, fontWeight: 700, color: "#a21caf"
+                  }}>{blog.title}</span>
                   {blog.trending && (
-                    <span className="px-3 py-0.5 bg-fuchsia-200 text-fuchsia-700 text-xs rounded-full font-bold shadow">
-                      Trending
-                    </span>
+                    <span style={{
+                      background: "#f0abfc", color: "#86198f",
+                      fontWeight: 600, fontSize: 12,
+                      borderRadius: 6, padding: "2px 10px", marginLeft: 8
+                    }}>Trending</span>
                   )}
                 </div>
-                <h2 className="text-2xl font-bold mb-1">{blog.title}</h2>
-                <div className="text-sm text-blue-500 mb-2 font-semibold">
-                  {formatDate(blog.date)}
+                <div style={{ color: "#334155", fontSize: 15, marginTop: 2, marginBottom: 6 }}>
+                  {blog.summary}
                 </div>
-                <p className="mb-2 font-medium text-gray-800">{blog.summary}</p>
-                {expanded[blog.id] && (
-                  <div className="mb-2 text-gray-900 whitespace-pre-line">
-                    {blog.description}
-                  </div>
-                )}
-                <div className="flex gap-2 mt-auto">
-                  <button
-                    onClick={() => handleExpand(blog.id)}
-                    className="px-4 py-2 rounded-lg bg-gradient-to-r from-blue-500 to-cyan-400 text-white font-semibold shadow hover:from-fuchsia-500 hover:to-blue-600 transition-all"
-                  >
-                    {expanded[blog.id] ? "Show Less" : "Read More"}
-                  </button>
-                  <button
-                    className="px-4 py-2 rounded-lg bg-gradient-to-r from-yellow-400 to-yellow-500 text-black font-semibold shadow hover:from-yellow-500 hover:to-yellow-400 transition-all"
-                    onClick={() => handleEdit(blog)}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    className="px-4 py-2 rounded-lg bg-gradient-to-r from-red-400 to-red-600 text-white font-semibold shadow hover:from-red-500 hover:to-red-700 transition-all"
-                    onClick={() => handleDelete(blog.id)}
-                  >
-                    Delete
-                  </button>
+                <div style={{ display: "flex", gap: 12, alignItems: "center", fontSize: 13, marginBottom: 4 }}>
+                  <span style={{ background: "#f1f5f9", color: "#0891b2", borderRadius: 3, padding: "2px 7px" }}>
+                    {blog.category}
+                  </span>
+                  <span style={{ color: "#888" }}>
+                    {blog.date && blog.date.toDate
+                      ? blog.date.toDate().toLocaleDateString()
+                      : ""}
+                  </span>
                 </div>
               </div>
             </div>
-          )
-        )}
-      </div>
+            {/* Render blog content blocks */}
+            <div style={{
+              fontFamily: "ui-sans-serif, system-ui, sans-serif",
+              color: "#1e293b",
+              maxWidth: 700,
+              lineHeight: 1.7,
+              margin: "0 auto"
+            }}>
+              {(blog.content || []).map(renderBlock)}
+            </div>
+          </div>
+        ))
+      )}
     </div>
   );
 }

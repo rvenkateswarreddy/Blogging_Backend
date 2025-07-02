@@ -7,7 +7,7 @@ import { FiMenu, FiX, FiLogOut } from "react-icons/fi";
 import { FaBlogger, FaClipboardList, FaChartPie, FaUser } from "react-icons/fa";
 import { usePathname, useRouter } from "next/navigation";
 import { signOut, onAuthStateChanged } from "firebase/auth";
-import { auth } from "@/FIrebaseConfig";
+import { auth } from "../../../../FIrebaseConfig";
 
 const navLinks = [
   {
@@ -28,6 +28,16 @@ const navLinks = [
   {
     label: "Posted Promotions",
     href: "/dashboard/posted-promotions",
+    icon: <FaClipboardList size={20} />,
+  },
+  {
+    label: "Job posts",
+    href: "/dashboard/jobapplications",
+    icon: <FaClipboardList size={20} />,
+  },
+  {
+    label: "Job lists",
+    href: "/dashboard/joblist",
     icon: <FaClipboardList size={20} />,
   },
 ];

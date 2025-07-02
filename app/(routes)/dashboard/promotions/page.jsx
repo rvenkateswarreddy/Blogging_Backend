@@ -4,7 +4,7 @@ import React, { useRef, useState } from "react";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { FiUploadCloud } from "react-icons/fi";
-import { db, storage } from "@/FIrebaseConfig";
+import { db, storage } from "../../../../FIrebaseConfig";
 
 const PromotionsPage = () => {
   const [promotionName, setPromotionName] = useState("");
