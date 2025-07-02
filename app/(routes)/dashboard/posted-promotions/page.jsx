@@ -11,7 +11,7 @@ import {
 } from "firebase/firestore";
 import { ref, deleteObject } from "firebase/storage";
 import { FiEdit, FiTrash2, FiSave, FiX } from "react-icons/fi";
-import { db, storage } from "@/FIrebaseConfig";
+import { db, storage } from "../../../../FIrebaseConfig";
 
 const PostedPromotionsPage = () => {
   const [promotions, setPromotions] = useState([]);
