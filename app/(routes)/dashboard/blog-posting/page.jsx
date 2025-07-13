@@ -44,6 +44,7 @@ const CATEGORIES = [
   "Finance",
   "Marketing",
   "Gaming",
+  "Job Notifications",
   "Other",
 ];
 
