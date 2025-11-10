@@ -88,7 +88,7 @@ const SideNav = () => {
             />
           </div>
           <span className="font-extrabold text-xl bg-gradient-to-r from-fuchsia-500 via-cyan-400 to-blue-500 bg-clip-text text-transparent tracking-wider drop-shadow-md">
-            ERRTEKNALOZY
+          TALENT WITH US
           </span>
         </div>
 
