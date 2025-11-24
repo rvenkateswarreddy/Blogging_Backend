@@ -1,15 +1,46 @@
 "use client";
-import React, { useState } from "react";
-import { collection, addDoc, Timestamp } from "firebase/firestore";
+import React, { useState, useEffect } from "react";
+import {
+  collection,
+  addDoc,
+  updateDoc,
+  doc,
+  getDoc,
+  Timestamp,
+  getDocs,
+  query,
+  orderBy,
+} from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { db, storage } from "../../../../FIrebaseConfig";
+import { auth, db, storage } from "../../../../FIrebaseConfig";
+import { useRouter, useSearchParams } from "next/navigation";
 
+// --- Helpers ---
+const generateSlug = (title = "") =>
+  title
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-");
+
+const parseDateTimeToTimestamp = (dateStr, timeStr) => {
+  if (!dateStr || !timeStr) return null;
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const [hours, minutes] = timeStr.split(":").map(Number);
+  const date = new Date(year, month - 1, day, hours, minutes);
+  if (isNaN(date.getTime())) return null;
+  return Timestamp.fromDate(date);
+};
+
+// --- Block initial states ---
 const initialBlockStates = {
   Heading: { text: "" },
   Subheading: { text: "" },
   Paragraph: { text: "" },
   List: { items: [""] },
-  Table: { headers: ["", ""], rows: [{ "": "", "": "" }] }, // rows as array of objects!
+  Table: { headers: ["", ""], rows: [{ "": "", "": "" }] },
   Image: { mode: "upload", url: "", file: null, alt: "" },
   Link: { text: "", href: "" },
 };
@@ -24,38 +55,42 @@ const BLOCK_TYPES = [
   "Link",
 ];
 
-const CATEGORIES = [
-  "AI & Tech",
-  "Programming",
-  "Machine Learning",
-  "Data Science",
-  "Web Development",
-  "Cloud",
-  "DevOps",
-  "Mobile Apps",
-  "Cybersecurity",
-  "UI/UX",
-  "Productivity",
-  "Business",
-  "Startup",
-  "Blockchain",
-  "Healthcare",
-  "Education",
-  "Finance",
-  "Marketing",
-  "Gaming",
-  "Job Notifications",
-  "Other",
-];
-
 export default function BlogForm() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const blogId = searchParams.get("id");
+
+  const [currentUser, setCurrentUser] = useState(null);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setCurrentUser({
+          uid: user.uid,
+          email: user.email,
+          name: user.displayName || "Employee",
+        });
+      } else {
+        setCurrentUser(null);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const [categories, setCategories] = useState([]);
+  const [selectedCategoryId, setSelectedCategoryId] = useState("");
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [creatingCategory, setCreatingCategory] = useState(false);
+  const [categoryLoading, setCategoryLoading] = useState(false);
+
   const [form, setForm] = useState({
     title: "",
     summary: "",
-    category: CATEGORIES[0],
     trending: false,
-    date: "",
+    scheduledDate: "",
+    scheduledTime: "",
   });
+
   const [contentBlocks, setContentBlocks] = useState([]);
   const [selectedType, setSelectedType] = useState("");
   const [blockState, setBlockState] = useState({});
@@ -64,7 +99,71 @@ export default function BlogForm() {
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState("");
 
-  // Form changes
+  const [editingMode, setEditingMode] = useState(false);
+
+  // Load categories on mount
+  useEffect(() => {
+    const fetchCategories = async () => {
+      setCategoryLoading(true);
+      try {
+        const q = query(collection(db, "blogCategories"), orderBy("name", "asc"));
+        const snap = await getDocs(q);
+        const list = snap.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setCategories(list);
+        if (list.length > 0) {
+          setSelectedCategoryId(list[0].id);
+        }
+      } catch (err) {
+        console.error("Error loading categories", err);
+      } finally {
+        setCategoryLoading(false);
+      }
+    };
+    fetchCategories();
+  }, []);
+
+  // If editing – load blog data
+  useEffect(() => {
+    if (!blogId) return;
+    const loadBlog = async () => {
+      try {
+        const docRef = doc(db, "blogs-internal", blogId);
+        const snap = await getDoc(docRef);
+        if (snap.exists()) {
+          const data = snap.data();
+          // populate form:
+          setForm({
+            title: data.title || "",
+            summary: data.summary || "",
+            trending: !!data.trending,
+            scheduledDate: data.scheduledAt
+              ? data.scheduledAt.toDate().toISOString().split("T")[0]
+              : "",
+            scheduledTime: data.scheduledAt
+              ? data.scheduledAt.toDate().toISOString().split("T")[1].substr(0,5)
+              : "",
+          });
+          setSelectedCategoryId(data.categoryId || "");
+          setContentBlocks(data.contentBlocks || []);
+          if (data.mainImageUrl) {
+            setMainImagePreview(data.mainImageUrl);
+          }
+          setEditingMode(true);
+        } else {
+          setMsg("❌ Blog not found");
+        }
+      } catch (err) {
+        console.error(err);
+        setMsg("❌ Error loading blog: " + err.message);
+      }
+    };
+    loadBlog();
+  }, [blogId]);
+
+  // Generic form change handler
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target;
     setForm((prev) => ({
@@ -73,10 +172,9 @@ export default function BlogForm() {
     }));
   };
 
-  // Blog image
   const handleMainImageChange = (e) => {
     const file = e.target.files[0];
-    setMainImage(file);
+    setMainImage(file || null);
     if (file) {
       const reader = new FileReader();
       reader.onloadend = () => setMainImagePreview(reader.result);
@@ -86,32 +184,36 @@ export default function BlogForm() {
     }
   };
 
-  // Content block state
   const handleBlockChange = (field, value) => {
     setBlockState((prev) => ({ ...prev, [field]: value }));
   };
 
-  // List block logic
+  // List logic
   const addListItem = () =>
     setBlockState((prev) => ({
       ...prev,
       items: [...(prev.items || [""]), ""],
     }));
+
   const removeListItem = (idx) =>
     setBlockState((prev) => ({
       ...prev,
       items: prev.items.filter((_, i) => i !== idx),
     }));
+
   const updateListItem = (idx, val) =>
     setBlockState((prev) => ({
       ...prev,
       items: prev.items.map((item, i) => (i === idx ? val : item)),
     }));
 
-  // Table block logic - array of objects
+  // Table logic
   const setTableHeaderCount = (count) => {
     count = Math.max(1, +count || 1);
-    let headers = Array.from({ length: count }, (_, i) => blockState.headers?.[i] || "");
+    let headers = Array.from(
+      { length: count },
+      (_, i) => blockState.headers?.[i] || ""
+    );
     let rows = (blockState.rows || []).map((row) => {
       let obj = {};
       headers.forEach((header, i) => {
@@ -122,7 +224,9 @@ export default function BlogForm() {
     setBlockState((prev) => ({
       ...prev,
       headers,
-      rows: rows.length ? rows : [Object.fromEntries(headers.map(h => [h || "Col1", ""]))],
+      rows: rows.length
+        ? rows
+        : [Object.fromEntries(headers.map((h, idx) => [h || `Col${idx + 1}`, ""]))],
     }));
   };
 
@@ -131,8 +235,17 @@ export default function BlogForm() {
     let headers = blockState.headers || ["", ""];
     let rows = Array.from({ length: count }, (_, i) =>
       blockState.rows?.[i]
-        ? { ...Object.fromEntries(headers.map((h, j) => [h || `Col${j + 1}`, blockState.rows[i][h] || ""])) }
-        : Object.fromEntries(headers.map((h, j) => [h || `Col${j + 1}`, ""]))
+        ? {
+            ...Object.fromEntries(
+              headers.map((h, j) => [
+                h || `Col${j + 1}`,
+                blockState.rows[i][h] || "",
+              ])
+            ),
+          }
+        : Object.fromEntries(
+            headers.map((h, j) => [h || `Col${j + 1}`, ""])
+          )
     );
     setBlockState((prev) => ({
       ...prev,
@@ -141,7 +254,9 @@ export default function BlogForm() {
   };
 
   const updateTableHeader = (i, val) => {
-    let headers = blockState.headers.map((h, idx) => (idx === i ? val : h));
+    let headers = (blockState.headers || []).map((h, idx) =>
+      idx === i ? val : h
+    );
     let rows = (blockState.rows || []).map((row) => {
       let obj = {};
       headers.forEach((header, idx) => {
@@ -160,13 +275,11 @@ export default function BlogForm() {
     setBlockState((prev) => ({
       ...prev,
       rows: prev.rows.map((row, ri) =>
-        ri === r
-          ? { ...row, [header]: val }
-          : row
+        ri === r ? { ...row, [header]: val } : row
       ),
     }));
 
-  // Image block logic
+  // Image block
   const handleBlockImageChange = (e) => {
     const file = e.target.files[0];
     if (file) {
@@ -183,29 +296,29 @@ export default function BlogForm() {
     }
   };
 
-  // Add block
   const addBlock = async () => {
+    if (!selectedType) return;
     let block = { ...blockState, type: selectedType };
 
-    // Table: Structure as {headers, rows: array of objects}
     if (selectedType === "Table") {
       block = {
         type: "Table",
-        headers: blockState.headers,
-        rows: blockState.rows,
+        headers: blockState.headers || [],
+        rows: blockState.rows || [],
       };
     }
 
-    // Image: upload if needed
     if (selectedType === "Image" && block.mode === "upload" && block.file) {
       block.uploading = true;
       setBlockState({ ...block, uploading: true });
+
       const imgRef = ref(
         storage,
         `blog-block-images/${Date.now()}_${block.file.name}`
       );
       await uploadBytes(imgRef, block.file);
       const url = await getDownloadURL(imgRef);
+
       block.url = url;
       block.mode = "url";
       block.uploading = false;
@@ -218,116 +331,274 @@ export default function BlogForm() {
     setBlockState({});
   };
 
-  // Remove block
   const removeBlock = (idx) =>
     setContentBlocks((prev) => prev.filter((_, i) => i !== idx));
 
-  // Submit blog
+  const handleCreateCategory = async () => {
+    if (!newCategoryName.trim()) return;
+    try {
+      setCreatingCategory(true);
+      const docRef = await addDoc(collection(db, "blogCategories"), {
+        name: newCategoryName.trim(),
+        createdAt: Timestamp.now(),
+      });
+      const newCat = { id: docRef.id, name: newCategoryName.trim() };
+      setCategories((prev) =>
+        [...prev, newCat].sort((a, b) => a.name.localeCompare(b.name))
+      );
+      setSelectedCategoryId(docRef.id);
+      setNewCategoryName("");
+      setMsg("✅ Category created");
+    } catch (err) {
+      console.error(err);
+      setMsg("❌ Error creating category: " + err.message);
+    } finally {
+      setCreatingCategory(false);
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     setMsg("");
+
     try {
-      let imgUrl = "";
+      if (!selectedCategoryId) {
+        setMsg("❌ Please select a category");
+        setLoading(false);
+        return;
+      }
+
+      if (!contentBlocks.length) {
+        setMsg("❌ Please add at least one content block");
+        setLoading(false);
+        return;
+      }
+
+      let mainImageUrl = mainImagePreview;
       if (mainImage) {
         const imgRef = ref(
           storage,
-          `blog-images/${Date.now()}_${mainImage.name}`
+          `blog-main-images/${Date.now()}_${mainImage.name}`
         );
         await uploadBytes(imgRef, mainImage);
-        imgUrl = await getDownloadURL(imgRef);
+        mainImageUrl = await getDownloadURL(imgRef);
       }
-      await addDoc(collection(db, "blogs-testing"), {
-        ...form,
-        image: imgUrl,
-        content: contentBlocks,
-        date: form.date
-          ? Timestamp.fromDate(new Date(form.date))
-          : Timestamp.now(),
-      });
-      setMsg("✅ Blog post added successfully!");
+
+      const now = Timestamp.now();
+      const slug = generateSlug(form.title);
+
+      let status = "draft";
+      let scheduledAt = null;
+      if (form.scheduledDate && form.scheduledTime) {
+        scheduledAt = parseDateTimeToTimestamp(
+          form.scheduledDate,
+          form.scheduledTime
+        );
+        status = "scheduled";
+      }
+
+      const selectedCategory = categories.find((c) => c.id === selectedCategoryId);
+
+      const docData = {
+        title: form.title.trim(),
+        summary: form.summary.trim(),
+        categoryId: selectedCategoryId,
+        categoryName: selectedCategory?.name || null,
+        trending: form.trending,
+        status,
+        isPublished: false,
+        scheduledAt,
+        publishedAt: null,
+        updatedAt: now,
+        slug,
+        mainImageUrl: mainImageUrl || "",
+        contentBlocks,
+        author: currentUser
+          ? {
+              uid: currentUser.uid,
+              name: currentUser.name || null,
+              email: currentUser.email,
+            }
+          : null,
+      };
+
+      // Add createdAt only for new documents
+      if (!editingMode) {
+        docData.createdAt = now;
+      }
+
+      if (editingMode && blogId) {
+        // update existing
+        await updateDoc(doc(db, "blogs-internal", blogId), docData);
+        setMsg("✅ Blog updated successfully!");
+      } else {
+        // create new
+        await addDoc(collection(db, "blogs-internal"), docData);
+        setMsg("🏁 Blog saved as draft successfully!");
+      }
+
+      // Reset
       setForm({
         title: "",
         summary: "",
-        category: CATEGORIES[0],
         trending: false,
-        date: "",
+        scheduledDate: "",
+        scheduledTime: "",
       });
       setMainImage(null);
       setMainImagePreview("");
       setContentBlocks([]);
+      setEditingMode(false);
+      
+      // Redirect after successful save
+      setTimeout(() => {
+        router.push("/dashboard/posted-blogs");
+      }, 1500);
     } catch (err) {
+      console.error(err);
       setMsg("❌ Error: " + err.message);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
-  // Render block
+  // Render preview blocks
   const renderBlock = (block, idx) => {
     switch (block.type) {
       case "Heading":
         return (
-          <h2 key={idx} style={{ fontSize: 32, fontWeight: 800, margin: "32px 0 14px", color: "#334155" }}>{block.text}</h2>
+          <h2
+            key={idx}
+            style={{
+              fontSize: 32,
+              fontWeight: 800,
+              margin: "32px 0 14px",
+              color: "#334155",
+            }}
+          >
+            {block.text}
+          </h2>
         );
       case "Subheading":
         return (
-          <h3 key={idx} style={{ fontSize: 22, fontWeight: 600, margin: "18px 0 7px", color: "#2563eb" }}>{block.text}</h3>
+          <h3
+            key={idx}
+            style={{
+              fontSize: 22,
+              fontWeight: 600,
+              margin: "18px 0 7px",
+              color: "#2563eb",
+            }}
+          >
+            {block.text}
+          </h3>
         );
       case "Paragraph":
         return (
-          <p key={idx} style={{ margin: "10px 0", fontSize: 18, color: "#0f172a" }}>{block.text}</p>
+          <p
+            key={idx}
+            style={{ margin: "10px 0", fontSize: 18, color: "#0f172a" }}
+          >
+            {block.text}
+          </p>
         );
       case "List":
         return (
-          <ul key={idx} style={{ paddingLeft: 28, margin: "12px 0", fontSize: 17 }}>
-            {block.items.filter(Boolean).map((item, i) => (
-              <li key={i} style={{ marginBottom: 5, color: "#334155" }}>{item}</li>
-            ))}
+          <ul
+            key={idx}
+            style={{ paddingLeft: 28, margin: "12px 0", fontSize: 17 }}
+          >
+            {block.items
+              ?.filter(Boolean)
+              .map((item, i) => (
+                <li key={i} style={{ marginBottom: 5, color: "#334155" }}>
+                  {item}
+                </li>
+              ))}
           </ul>
         );
       case "Table":
         return (
-          <table key={idx} style={{
-            borderCollapse: "collapse", margin: "18px 0", width: "100%", background: "#f0f9ff"
-          }}>
+          <table
+            key={idx}
+            style={{
+              borderCollapse: "collapse",
+              margin: "18px 0",
+              width: "100%",
+              background: "#f0f9ff",
+            }}
+          >
             <thead>
               <tr>
-                {block.headers.map((header, h) =>
-                  <th key={h} style={{
-                    padding: "8px 14px",
-                    border: "1.5px solid #7dd3fc",
-                    background: "#bae6fd",
-                    color: "#0e7490",
-                    fontWeight: 600,
-                  }}>{header}</th>
-                )}
+                {block.headers?.map((header, h) => (
+                  <th
+                    key={h}
+                    style={{
+                      padding: "8px 14px",
+                      border: "1.5px solid #7dd3fc",
+                      background: "#bae6fd",
+                      color: "#0e7490",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {header}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
-              {block.rows.map((row, r) =>
+              {block.rows?.map((row, r) => (
                 <tr key={r}>
-                  {block.headers.map((header, c) =>
-                    <td key={c} style={{
-                      padding: "8px 14px",
-                      border: "1.5px solid #7dd3fc",
-                      color: "#0e7490"
-                    }}>{row[header]}</td>
-                  )}
+                  {block.headers?.map((header, c) => (
+                    <td
+                      key={c}
+                      style={{
+                        padding: "8px 14px",
+                        border: "1.5px solid #7dd3fc",
+                        color: "#0e7490",
+                      }}
+                    >
+                      {row[header]}
+                    </td>
+                  ))}
                 </tr>
-              )}
+              ))}
             </tbody>
           </table>
         );
       case "Image":
-        return block.url
-          ? <img key={idx} src={block.url} alt={block.alt} style={{ maxWidth: "100%", borderRadius: 10, boxShadow: "0 2px 14px #99f6e4", margin: "16px 0" }} />
-          : null;
+        return block.url ? (
+          <img
+            key={idx}
+            src={block.url}
+            alt={block.alt}
+            style={{
+              maxWidth: "100%",
+              borderRadius: 10,
+              boxShadow: "0 2px 14px #99f6e4",
+              margin: "16px 0",
+            }}
+          />
+        ) : null;
       case "Link":
         return (
-          <a key={idx} href={block.href} target="_blank" rel="noopener noreferrer"
+          <a
+            key={idx}
+            href={block.href}
+            target="_blank"
+            rel="noopener noreferrer"
             style={{
-              color: "#0ea5e9", textDecoration: "underline", fontWeight: 500, fontSize: 17, margin: "8px 0", display: "inline-block"
-            }}>{block.text}</a>
+              color: "#0ea5e9",
+              textDecoration: "underline",
+              fontWeight: 500,
+              fontSize: 17,
+              margin: "8px 0",
+              display: "inline-block",
+            }}
+          >
+            {block.text}
+          </a>
         );
       default:
         return null;
@@ -346,10 +617,15 @@ export default function BlogForm() {
               type="text"
               placeholder={`Enter ${selectedType.toLowerCase()}...`}
               value={blockState.text || ""}
-              onChange={e => handleBlockChange("text", e.target.value)}
+              onChange={(e) => handleBlockChange("text", e.target.value)}
               autoFocus
             />
-            <button type="button" className="px-4 py-2 bg-blue-500 text-white rounded-lg" onClick={addBlock} disabled={!blockState.text?.trim()}>
+            <button
+              type="button"
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg"
+              onClick={addBlock}
+              disabled={!blockState.text?.trim()}
+            >
               Add
             </button>
           </>
@@ -362,9 +638,14 @@ export default function BlogForm() {
               placeholder="Enter paragraph text..."
               rows={3}
               value={blockState.text || ""}
-              onChange={e => handleBlockChange("text", e.target.value)}
+              onChange={(e) => handleBlockChange("text", e.target.value)}
             />
-            <button type="button" className="px-4 py-2 bg-blue-500 text-white rounded-lg" onClick={addBlock} disabled={!blockState.text?.trim()}>
+            <button
+              type="button"
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg"
+              onClick={addBlock}
+              disabled={!blockState.text?.trim()}
+            >
               Add
             </button>
           </>
@@ -372,14 +653,14 @@ export default function BlogForm() {
       case "List":
         return (
           <>
-            {blockState.items && blockState.items.map((item, i) => (
+            {blockState.items?.map((item, i) => (
               <div key={i} className="flex gap-2 mb-2">
                 <input
                   className="flex-1 p-2 border border-fuchsia-200 rounded-lg"
                   type="text"
                   placeholder={`List item #${i + 1}`}
                   value={item}
-                  onChange={e => updateListItem(i, e.target.value)}
+                  onChange={(e) => updateListItem(i, e.target.value)}
                 />
                 <button
                   type="button"
@@ -387,14 +668,24 @@ export default function BlogForm() {
                   onClick={() => removeListItem(i)}
                   disabled={blockState.items.length <= 1}
                   title="Remove"
-                >-</button>
+                >
+                  -
+                </button>
               </div>
             ))}
-            <button type="button" className="px-3 py-2 bg-fuchsia-500 text-white rounded-lg" onClick={addListItem}>
+            <button
+              type="button"
+              className="px-3 py-2 bg-fuchsia-500 text-white rounded-lg"
+              onClick={addListItem}
+            >
               Add Item
             </button>
-            <button type="button" className="px-4 py-2 bg-blue-500 text-white rounded-lg ml-2" onClick={addBlock}
-              disabled={!blockState.items?.some(it => it.trim())}>
+            <button
+              type="button"
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg ml-2"
+              onClick={addBlock}
+              disabled={!blockState.items?.some((it) => it.trim())}
+            >
               Add List
             </button>
           </>
@@ -411,7 +702,7 @@ export default function BlogForm() {
                   min={1}
                   max={10}
                   value={blockState.headers?.length || 2}
-                  onChange={e => setTableHeaderCount(e.target.value)}
+                  onChange={(e) => setTableHeaderCount(e.target.value)}
                 />
               </div>
               <div>
@@ -422,7 +713,7 @@ export default function BlogForm() {
                   min={1}
                   max={10}
                   value={blockState.rows?.length || 1}
-                  onChange={e => setTableRowCount(e.target.value)}
+                  onChange={(e) => setTableRowCount(e.target.value)}
                 />
               </div>
             </div>
@@ -430,43 +721,53 @@ export default function BlogForm() {
               <table className="border-collapse w-full mb-3">
                 <thead>
                   <tr>
-                    {(blockState.headers || []).map((header, h) =>
+                    {(blockState.headers || []).map((header, h) => (
                       <th key={h}>
                         <input
                           className="p-2 border border-blue-300 rounded w-28 mb-2 font-bold bg-blue-50"
                           type="text"
                           placeholder={`Header ${h + 1}`}
                           value={header}
-                          onChange={e => updateTableHeader(h, e.target.value)}
+                          onChange={(e) =>
+                            updateTableHeader(h, e.target.value)
+                          }
                         />
                       </th>
-                    )}
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {(blockState.rows || []).map((row, r) =>
+                  {(blockState.rows || []).map((row, r) => (
                     <tr key={r}>
-                      {(blockState.headers || []).map((header, c) =>
+                      {(blockState.headers || []).map((header, c) => (
                         <td key={c}>
                           <input
                             className="p-2 border border-blue-300 rounded w-28 mb-2"
                             type="text"
                             placeholder={`Row ${r + 1}, Col ${c + 1}`}
                             value={row[header] || ""}
-                            onChange={e => updateTableCell(r, header, e.target.value)}
+                            onChange={(e) =>
+                              updateTableCell(r, header, e.target.value)
+                            }
                           />
                         </td>
-                      )}
+                      ))}
                     </tr>
-                  )}
+                  ))}
                 </tbody>
               </table>
             </div>
-            <button type="button" className="px-4 py-2 bg-blue-500 text-white rounded-lg" onClick={addBlock}
+            <button
+              type="button"
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg"
+              onClick={addBlock}
               disabled={
-                !(blockState.headers?.some(it => it.trim())) ||
-                !(blockState.rows?.some(row => Object.values(row).some(val => val.trim())))
-              }>
+                !blockState.headers?.some((it) => it.trim()) ||
+                !blockState.rows?.some((row) =>
+                  Object.values(row).some((val) => val.trim())
+                )
+              }
+            >
               Add Table
             </button>
           </>
@@ -475,14 +776,30 @@ export default function BlogForm() {
         return (
           <>
             <div className="flex gap-6 mb-3">
-              <button type="button"
-                className={`px-3 py-2 rounded ${blockState.mode !== "url" ? "bg-fuchsia-500 text-white" : "bg-fuchsia-100 text-fuchsia-600"}`}
-                onClick={() => setBlockState({ ...initialBlockStates.Image, mode: "upload" })}>
+              <button
+                type="button"
+                className={`px-3 py-2 rounded ${
+                  blockState.mode !== "url"
+                    ? "bg-fuchsia-500 text-white"
+                    : "bg-fuchsia-100 text-fuchsia-600"
+                }`}
+                onClick={() =>
+                  setBlockState({ ...initialBlockStates.Image, mode: "upload" })
+                }
+              >
                 Upload
               </button>
-              <button type="button"
-                className={`px-3 py-2 rounded ${blockState.mode === "url" ? "bg-fuchsia-500 text-white" : "bg-fuchsia-100 text-fuchsia-600"}`}
-                onClick={() => setBlockState({ ...initialBlockStates.Image, mode: "url" })}>
+              <button
+                type="button"
+                className={`px-3 py-2 rounded ${
+                  blockState.mode === "url"
+                    ? "bg-fuchsia-500 text-white"
+                    : "bg-fuchsia-100 text-fuchsia-600"
+                }`}
+                onClick={() =>
+                  setBlockState({ ...initialBlockStates.Image, mode: "url" })
+                }
+              >
                 Image Link
               </button>
             </div>
@@ -495,7 +812,11 @@ export default function BlogForm() {
                   onChange={handleBlockImageChange}
                 />
                 {blockState.preview && (
-                  <img src={blockState.preview} alt="Preview" className="mb-2 rounded shadow max-h-48" />
+                  <img
+                    src={blockState.preview}
+                    alt="Preview"
+                    className="mb-2 rounded shadow max-h-48"
+                  />
                 )}
               </>
             ) : (
@@ -505,10 +826,20 @@ export default function BlogForm() {
                   type="text"
                   placeholder="Paste image URL"
                   value={blockState.url || ""}
-                  onChange={e => setBlockState(prev => ({ ...prev, url: e.target.value, preview: e.target.value }))}
+                  onChange={(e) =>
+                    setBlockState((prev) => ({
+                      ...prev,
+                      url: e.target.value,
+                      preview: e.target.value,
+                    }))
+                  }
                 />
                 {blockState.url && (
-                  <img src={blockState.url} alt="Preview" className="mb-2 rounded shadow max-h-48" />
+                  <img
+                    src={blockState.url}
+                    alt="Preview"
+                    className="mb-2 rounded shadow max-h-48"
+                  />
                 )}
               </>
             )}
@@ -517,13 +848,20 @@ export default function BlogForm() {
               type="text"
               placeholder="Alt text"
               value={blockState.alt || ""}
-              onChange={e => setBlockState(prev => ({ ...prev, alt: e.target.value }))}
+              onChange={(e) =>
+                setBlockState((prev) => ({ ...prev, alt: e.target.value }))
+              }
             />
-            <button type="button" className="px-4 py-2 bg-blue-500 text-white rounded-lg"
+            <button
+              type="button"
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg"
               onClick={addBlock}
-              disabled={blockState.mode === "url"
-                ? !blockState.url
-                : (!blockState.file || blockState.uploading)}>
+              disabled={
+                blockState.mode === "url"
+                  ? !blockState.url
+                  : !blockState.file || blockState.uploading
+              }
+            >
               {blockState.uploading ? "Uploading..." : "Add Image"}
             </button>
           </>
@@ -536,19 +874,23 @@ export default function BlogForm() {
               type="text"
               placeholder="Display text"
               value={blockState.text || ""}
-              onChange={e => handleBlockChange("text", e.target.value)}
+              onChange={(e) => handleBlockChange("text", e.target.value)}
             />
             <input
               className="block w-full p-2 mb-3 border border-blue-200 rounded-lg"
               type="text"
               placeholder="URL"
               value={blockState.href || ""}
-              onChange={e => handleBlockChange("href", e.target.value)}
+              onChange={(e) => handleBlockChange("href", e.target.value)}
             />
-            <button type="button" className="px-4 py-2 bg-blue-500 text-white rounded-lg"
+            <button
+              type="button"
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg"
               onClick={addBlock}
               disabled={!blockState.text?.trim() || !blockState.href?.trim()}
-            >Add Link</button>
+            >
+              Add Link
+            </button>
           </>
         );
       default:
@@ -558,14 +900,15 @@ export default function BlogForm() {
 
   return (
     <form
-      className="bg-gradient-to-br from-fuchsia-50 via-cyan-50 to-blue-50 text-black p-8 rounded-xl shadow-2xl border border-fuchsia-100 max-w-2xl mx-auto mb-12 mt-6"
+      className="bg-gradient-to-br from-fuchsia-50 via-cyan-50 to-blue-50 text-black p-8 rounded-xl shadow-2xl border border-fuchsia-100 max-w-3xl mx-auto mb-12 mt-6"
       onSubmit={handleSubmit}
       style={{ fontFamily: "Inter, sans-serif" }}
       autoComplete="off"
     >
       <h2 className="text-3xl font-extrabold mb-6 text-center bg-gradient-to-r from-fuchsia-500 via-cyan-400 to-blue-500 bg-clip-text text-transparent drop-shadow">
-        Create a New Blog Post
+        {editingMode ? "Edit Blog Post" : "Talent With Us — Internal Blog Post"}
       </h2>
+
       {msg && (
         <div
           className={`mb-4 text-center font-semibold px-4 py-2 rounded-lg shadow-sm ${
@@ -577,9 +920,9 @@ export default function BlogForm() {
           {msg}
         </div>
       )}
-      <div className="grid grid-cols-1 gap-5">
 
-        {/* Main fields */}
+      <div className="grid grid-cols-1 gap-5">
+        {/* Title */}
         <div>
           <label className="block mb-1 font-semibold">Title</label>
           <input
@@ -591,8 +934,12 @@ export default function BlogForm() {
             onChange={handleChange}
             required
           />
+          <p className="mt-1 text-xs text-gray-500">
+            Slug: <span className="font-mono">{generateSlug(form.title)}</span>
+          </p>
         </div>
 
+        {/* Summary */}
         <div>
           <label className="block mb-1 font-semibold">Summary</label>
           <textarea
@@ -606,60 +953,53 @@ export default function BlogForm() {
           />
         </div>
 
-        {/* Blog Content Builder */}
-        <div>
-          <label className="block mb-1 font-semibold">Blog Content</label>
-          <div className="flex gap-4 mb-3 flex-wrap">
-            {BLOCK_TYPES.map(type => (
-              <button
-                key={type}
-                type="button"
-                className={`mb-2 px-3 py-1 rounded-lg border font-semibold text-sm 
-                  ${selectedType === type ? "bg-blue-500 text-white border-blue-600"
-                    : "bg-white text-blue-700 border-blue-300 hover:bg-blue-50"}`}
-                onClick={() => {
-                  setSelectedType(type);
-                  setBlockState(initialBlockStates[type]);
-                }}
-              >{type}</button>
-            ))}
-          </div>
-          {selectedType && (
-            <div className="p-5 border border-blue-200 rounded-lg mb-4 bg-blue-50">
-              <div className="mb-2 font-semibold text-blue-900 text-lg">{selectedType} Block</div>
-              {blockInput()}
-            </div>
-          )}
-          <div className="border border-blue-100 rounded-xl p-5 bg-white shadow mb-4">
-            <div className="font-semibold mb-2 text-blue-800">Content Preview</div>
-            {contentBlocks.length === 0
-              ? <span className="text-gray-400">No content yet</span>
-              : contentBlocks.map((b, i) =>
-                <div key={i} className="relative group mb-5">
-                  <span
-                    className="absolute right-0 top-0 text-xs rounded bg-red-100 text-red-700 px-2 py-1 opacity-0 group-hover:opacity-100 cursor-pointer transition"
-                    onClick={() => removeBlock(i)}>Remove</span>
-                  {renderBlock(b, i)}
-                </div>
-              )}
-          </div>
-        </div>
-
-        {/* Blog meta */}
+        {/* Category selection & creation */}
         <div>
           <label className="block mb-1 font-semibold">Category</label>
-          <select
-            name="category"
-            className="w-full px-4 py-2 rounded-lg border border-fuchsia-300 bg-white focus:ring-2 focus:ring-fuchsia-400 outline-none text-black font-medium"
-            value={form.category}
-            onChange={handleChange}
-          >
-            {CATEGORIES.map((cat) => (
-              <option key={cat}>{cat}</option>
-            ))}
-          </select>
+          {categoryLoading ? (
+            <div className="text-sm text-gray-500">Loading categories...</div>
+          ) : (
+            <>
+              <select
+                className="w-full px-4 py-2 rounded-lg border border-fuchsia-300 bg-white focus:ring-2 focus:ring-fuchsia-400 outline-none text-black font-medium mb-2"
+                value={selectedCategoryId || ""}
+                onChange={(e) => setSelectedCategoryId(e.target.value)}
+                required
+              >
+                {categories.map((cat) => (
+                  <option key={cat.id} value={cat.id}>
+                    {cat.name}
+                  </option>
+                ))}
+              </select>
+
+              <div className="mt-2">
+                <div className="text-sm font-semibold mb-1">
+                  Or create a new category
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    className="flex-1 px-3 py-2 rounded-lg border border-cyan-300 bg-white focus:ring-2 focus:ring-cyan-400 outline-none text-black text-sm"
+                    placeholder="New category name"
+                    value={newCategoryName}
+                    onChange={(e) => setNewCategoryName(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="px-3 py-2 rounded-lg bg-cyan-500 text-white text-sm font-semibold disabled:opacity-60"
+                    onClick={handleCreateCategory}
+                    disabled={creatingCategory || !newCategoryName.trim()}
+                  >
+                    {creatingCategory ? "Saving..." : "Add"}
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
         </div>
 
+        {/* Trending */}
         <div className="flex items-center gap-3">
           <input
             type="checkbox"
@@ -674,18 +1014,89 @@ export default function BlogForm() {
           </label>
         </div>
 
+        {/* Scheduling */}
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block mb-1 font-semibold">Scheduled Date</label>
+            <input
+              type="date"
+              name="scheduledDate"
+              value={form.scheduledDate}
+              onChange={handleChange}
+              className="w-full px-4 py-2 rounded-lg border border-cyan-300 bg-white focus:ring-2 focus:ring-cyan-400 outline-none text-black font-medium"
+            />
+          </div>
+          <div>
+            <label className="block mb-1 font-semibold">Scheduled Time</label>
+            <input
+              type="time"
+              name="scheduledTime"
+              value={form.scheduledTime}
+              onChange={handleChange}
+              className="w-full px-4 py-2 rounded-lg border border-cyan-300 bg-white focus:ring-2 focus:ring-cyan-400 outline-none text-black font-medium"
+            />
+          </div>
+        </div>
+        <p className="text-xs text-gray-500 mt-1">
+          Leave both fields blank to save as Draft. Fill to schedule publish.
+        </p>
+
+        {/* Blog Content Builder */}
         <div>
-          <label className="block mb-1 font-semibold">Publish Date</label>
-          <input
-            type="date"
-            name="date"
-            className="w-full px-4 py-2 rounded-lg border border-cyan-300 bg-white focus:ring-2 focus:ring-cyan-400 outline-none text-black font-medium"
-            value={form.date}
-            onChange={handleChange}
-            required
-          />
+          <label className="block mb-1 font-semibold">Blog Content</label>
+          <div className="flex gap-4 mb-3 flex-wrap">
+            {BLOCK_TYPES.map((type) => (
+              <button
+                key={type}
+                type="button"
+                className={`mb-2 px-3 py-1 rounded-lg border font-semibold text-sm 
+                  ${
+                    selectedType === type
+                      ? "bg-blue-500 text-white border-blue-600"
+                      : "bg-white text-blue-700 border-blue-300 hover:bg-blue-50"
+                  }`}
+                onClick={() => {
+                  setSelectedType(type);
+                  setBlockState(initialBlockStates[type]);
+                }}
+              >
+                {type}
+              </button>
+            ))}
+          </div>
+
+          {selectedType && (
+            <div className="p-5 border border-blue-200 rounded-lg mb-4 bg-blue-50">
+              <div className="mb-2 font-semibold text-blue-900 text-lg">
+                {selectedType} Block
+              </div>
+              {blockInput()}
+            </div>
+          )}
+
+          <div className="border border-blue-100 rounded-xl p-5 bg-white shadow mb-4">
+            <div className="font-semibold mb-2 text-blue-800">
+              Content Preview
+            </div>
+            {contentBlocks.length === 0 ? (
+              <span className="text-gray-400">No content yet</span>
+            ) : (
+              contentBlocks.map((b, i) => (
+                <div key={i} className="relative group mb-5">
+                  <span
+                    className="absolute right-0 top-0 text-xs rounded bg-red-100 text-red-700 px-2 py-1 opacity-0 group-hover:opacity-100 cursor-pointer transition"
+                    onClick={() => removeBlock(i)}
+                  >
+                    Remove
+                  </span>
+                  {renderBlock(b, i)}
+                </div>
+              ))
+            )}
+          </div>
         </div>
 
+        {/* Blog Image */}
         <div>
           <label className="block mb-1 font-semibold">Blog Image</label>
           <input
@@ -693,13 +1104,17 @@ export default function BlogForm() {
             accept="image/*"
             onChange={handleMainImageChange}
             className="file-input file-input-bordered w-full border-fuchsia-300 bg-white text-black"
-            required
           />
           {mainImagePreview && (
-            <img src={mainImagePreview} alt="Blog" className="mt-2 rounded shadow max-h-48" />
+            <img
+              src={mainImagePreview}
+              alt="Blog"
+              className="mt-2 rounded shadow max-h-48"
+            />
           )}
         </div>
 
+        {/* Submit */}
         <button
           type="submit"
           disabled={loading}
@@ -728,10 +1143,12 @@ export default function BlogForm() {
                   d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
                 ></path>
               </svg>
-              Posting...
+              Saving...
             </span>
+          ) : editingMode ? (
+            "Update Blog"
           ) : (
-            "Post Blog"
+            "Save Blog"
           )}
         </button>
       </div>

@@ -28,7 +28,7 @@
     ".next/types/**/*.ts",
     "**/*.ts",
     "**/*.tsx"
-  ],
+, "app/(routes)/dashboard/edit-blog/page.jsx"  ],
   "exclude": [
     "node_modules"
   ]

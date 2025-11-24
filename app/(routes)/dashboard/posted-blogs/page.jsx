@@ -1,202 +1,409 @@
 "use client";
 import React, { useEffect, useState } from "react";
-import { collection, getDocs, query, orderBy } from "firebase/firestore";
-import { db } from "../../../../FIrebaseConfig";
+import {
+  collection,
+  query,
+  orderBy,
+  onSnapshot,
+  updateDoc,
+  deleteDoc,
+  doc,
+  Timestamp,
+  limit,
+  startAfter,
+  getDocs,
+  where,
+} from "firebase/firestore";
+import { auth, db } from "../../../../FIrebaseConfig";
+import { useRouter } from "next/navigation";
 
-// Render a single content block (matching BlogForm: handles table as array of objects)
-function renderBlock(block, idx) {
-  switch (block.type) {
-    case "Heading":
-      return (
-        <h2 key={idx} style={{ fontSize: 28, fontWeight: 700, margin: "24px 0 12px", color: "#334155" }}>
-          {block.text}
-        </h2>
-      );
-    case "Subheading":
-      return (
-        <h3 key={idx} style={{ fontSize: 20, fontWeight: 600, margin: "14px 0 7px", color: "#2563eb" }}>
-          {block.text}
-        </h3>
-      );
-    case "Paragraph":
-      return (
-        <p key={idx} style={{ margin: "8px 0", fontSize: 17, color: "#0f172a" }}>
-          {block.text}
-        </p>
-      );
-    case "List":
-      return (
-        <ul key={idx} style={{ paddingLeft: 24, margin: "8px 0", fontSize: 17 }}>
-          {block.items.filter(Boolean).map((item, i) => (
-            <li key={i} style={{ marginBottom: 5, color: "#334155" }}>{item}</li>
-          ))}
-        </ul>
-      );
-    case "Table":
-      // Table: {headers: [...], rows: [ {header:value,...}, ... ]}
-      return (
-        <table key={idx} style={{
-          borderCollapse: "collapse", margin: "18px 0", width: "100%", background: "#f0f9ff"
-        }}>
-          <thead>
+export default function BlogManager() {
+  const [blogs, setBlogs] = useState([]);
+  const [lastDoc, setLastDoc] = useState(null);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [currentUser, setCurrentUser] = useState(null);
+  const [rescheduleModal, setRescheduleModal] = useState({ open: false, id: null });
+  const [newDate, setNewDate] = useState("");
+  const [newTime, setNewTime] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState("");
+  const router = useRouter();
+  const pageLimit = 8;
+
+  // Auth
+  useEffect(() => {
+    const unsub = auth.onAuthStateChanged((user) => setCurrentUser(user));
+    return () => unsub();
+  }, []);
+
+  // Load first page
+  const loadBlogs = async () => {
+    const q = query(collection(db, "blogs-internal"), orderBy("createdAt", "desc"), limit(pageLimit));
+    const docs = await getDocs(q);
+
+    setBlogs(docs.docs.map((d) => ({ id: d.id, ...d.data() })));
+    setLastDoc(docs.docs[docs.docs.length - 1]);
+  };
+
+  // Next page
+  const loadMore = async () => {
+    if (!lastDoc) return;
+
+    const q = query(
+      collection(db, "blogs-internal"),
+      orderBy("createdAt", "desc"),
+      startAfter(lastDoc),
+      limit(pageLimit)
+    );
+
+    const docs = await getDocs(q);
+
+    setBlogs((prev) => [...prev, ...docs.docs.map((d) => ({ id: d.id, ...d.data() }))]);
+    setLastDoc(docs.docs[docs.docs.length - 1]);
+  };
+
+  useEffect(() => {
+    loadBlogs();
+  }, []);
+
+  // Publish Overdue Scheduled Posts
+ const handlePublishOverdueScheduled = async () => {
+  setLoading(true);
+  try {
+    const now = Timestamp.now();
+    
+    // Get ALL scheduled posts from the database (not just filtered ones)
+    const scheduledQuery = query(
+      collection(db, "blogs-internal"),
+      where("status", "==", "scheduled")
+    );
+    
+    const snap = await getDocs(scheduledQuery);
+    
+    // Filter for overdue posts on the client side
+    const overduePosts = snap.docs.filter(doc => {
+      const data = doc.data();
+      return data.scheduledAt && data.scheduledAt.toDate() <= new Date();
+    });
+    
+    if (overduePosts.length === 0) {
+      setMsg("✅ No overdue scheduled posts found");
+      setLoading(false);
+      return;
+    }
+
+    const publishPromises = overduePosts.map(doc => 
+      updateDoc(doc.ref, {
+        status: "published",
+        isPublished: true,
+        publishedAt: now,
+      })
+    );
+    
+    await Promise.all(publishPromises);
+    setMsg(`✅ Published ${overduePosts.length} overdue scheduled posts`);
+    loadBlogs(); // Refresh the list
+    
+  } catch (err) {
+    console.error("Error publishing overdue posts:", err);
+    setMsg("❌ Error publishing overdue posts");
+  } finally {
+    setLoading(false);
+  }
+};
+
+  // SEARCH filter
+  const searchedBlogs = blogs.filter((b) =>
+    b.title.toLowerCase().includes(search.toLowerCase()) ||
+    b.summary.toLowerCase().includes(search.toLowerCase())
+  );
+
+  // Filter logic
+  const finalBlogs = searchedBlogs.filter((b) => {
+    if (filter === "draft") return b.status === "draft";
+    if (filter === "scheduled") return b.status === "scheduled";
+    if (filter === "published") return b.status === "published";
+    if (filter === "mine") return b.author?.uid === currentUser?.uid;
+    return true;
+  });
+
+  const bg = (status) =>
+    status === "published"
+      ? "bg-green-100 text-green-700"
+      : status === "scheduled"
+      ? "bg-yellow-100 text-yellow-700"
+      : "bg-gray-100 text-gray-700";
+
+  // Format date for display
+  const formatDate = (timestamp) => {
+    if (!timestamp) return "Not scheduled";
+    const date = timestamp.toDate();
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
+  // Check if scheduled time has passed
+  const isOverdue = (scheduledAt) => {
+    if (!scheduledAt) return false;
+    return scheduledAt.toDate() <= new Date();
+  };
+
+  const handlePublish = async (id) => {
+    await updateDoc(doc(db, "blogs-internal", id), {
+      status: "published",
+      isPublished: true,
+      publishedAt: Timestamp.now(),
+    });
+    setMsg("🚀 Blog Published!");
+  };
+
+  const handleDelete = async (id) => {
+    if (!confirm("Are you sure?")) return;
+    await deleteDoc(doc(db, "blogs-internal", id));
+    setMsg("🗑 Blog deleted.");
+  };
+
+  const applyReschedule = async () => {
+    const [y, m, d] = newDate.split("-").map(Number);
+    const [hh, mm] = newTime.split(":").map(Number);
+    const scheduleTS = Timestamp.fromDate(new Date(y, m - 1, d, hh, mm));
+
+    await updateDoc(doc(db, "blogs-internal", rescheduleModal.id), {
+      status: "scheduled",
+      scheduledAt: scheduleTS,
+    });
+
+    setRescheduleModal({ open: false, id: null });
+    setMsg("📅 Rescheduled Successfully");
+    loadBlogs(); // Refresh the list
+  };
+
+  return (
+    <div className="p-6 max-w-6xl mx-auto">
+
+      <h2 className="text-3xl font-bold text-center mb-6 bg-gradient-to-r from-blue-500 to-fuchsia-500 bg-clip-text text-transparent">
+        Blog Manager Dashboard
+      </h2>
+
+      {msg && (
+        <div className={`mb-4 text-center px-3 py-2 rounded ${
+          msg.includes("✅") || msg.includes("🚀") || msg.includes("📅") 
+            ? "bg-green-100 text-green-800" 
+            : "bg-blue-100 text-blue-800"
+        }`}>
+          {msg}
+        </div>
+      )}
+
+      {/* Search */}
+      <input
+        type="text"
+        className="w-full p-3 mb-5 rounded border shadow"
+        placeholder="Search blogs by title or summary..."
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+      />
+
+      {/* Filters & Actions */}
+      <div className="flex flex-wrap gap-3 justify-center mb-6">
+        {["all", "draft", "scheduled", "published", "mine"].map((f) => (
+          <button
+            key={f}
+            className={`px-4 py-2 rounded border font-medium ${
+              filter === f ? "bg-blue-500 text-white" : "bg-white text-blue-600 border-blue-300"
+            }`}
+            onClick={() => setFilter(f)}
+          >
+            {f.charAt(0).toUpperCase() + f.slice(1)}
+          </button>
+        ))}
+        
+        {/* Publish Overdue Button */}
+        <button
+          onClick={handlePublishOverdueScheduled}
+          disabled={loading}
+          className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg disabled:opacity-50 font-medium"
+        >
+          {loading ? "Publishing..." : "Publish Overdue"}
+        </button>
+      </div>
+
+      {/* Table */}
+      <div className="overflow-x-auto bg-white rounded-lg shadow">
+        <table className="w-full">
+          <thead className="bg-gray-50 font-semibold">
             <tr>
-              {(block.headers || []).map((header, h) =>
-                <th key={h} style={{
-                  padding: "8px 14px",
-                  border: "1.5px solid #7dd3fc",
-                  background: "#bae6fd",
-                  color: "#0e7490",
-                  fontWeight: 600,
-                }}>{header}</th>
-              )}
+              <th className="p-4 border text-left">Title</th>
+              <th className="p-4 border text-left">Author</th>
+              <th className="p-4 border text-left">Status</th>
+              <th className="p-4 border text-left">Scheduled Time</th>
+              <th className="p-4 border text-left">Actions</th>
             </tr>
           </thead>
+
           <tbody>
-            {(block.rows || []).map((row, r) =>
-              <tr key={r}>
-                {(block.headers || []).map((header, c) =>
-                  <td key={c} style={{
-                    padding: "8px 14px",
-                    border: "1.5px solid #7dd3fc",
-                    color: "#0e7490"
-                  }}>{row[header]}</td>
-                )}
+            {finalBlogs.map((b) => (
+              <tr key={b.id} className="border hover:bg-gray-50">
+                <td className="p-4 border max-w-xs">
+                  <div className="font-medium text-gray-900">{b.title}</div>
+                  <div className="text-sm text-gray-500 mt-1 line-clamp-2">{b.summary}</div>
+                </td>
+                
+                <td className="p-4 border">
+                  <div className="text-sm">{b.author?.name || "Unknown"}</div>
+                  <div className="text-xs text-gray-500">{b.author?.email}</div>
+                </td>
+                
+                <td className="p-4 border">
+                  <span className={`px-3 py-1 rounded-full text-sm font-medium ${bg(b.status)}`}>
+                    {b.status}
+                  </span>
+                  {b.status === "scheduled" && isOverdue(b.scheduledAt) && (
+                    <div className="text-xs text-red-600 font-medium mt-1">⏰ OVERDUE</div>
+                  )}
+                </td>
+
+                <td className="p-4 border">
+                  {b.scheduledAt ? (
+                    <div className={`text-sm ${isOverdue(b.scheduledAt) ? 'text-red-600 font-semibold' : 'text-gray-700'}`}>
+                      {formatDate(b.scheduledAt)}
+                      {isOverdue(b.scheduledAt) && (
+                        <div className="text-xs text-red-500 mt-1">Scheduled time has passed</div>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="text-sm text-gray-400">Not scheduled</span>
+                  )}
+                </td>
+
+                <td className="p-4 border">
+                  <div className="flex flex-wrap gap-2">
+                    {/* Edit */}
+                    <button
+                      onClick={() => router.push(`/dashboard/edit-blog?id=${b.id}`)}
+                      className="px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white rounded text-sm"
+                    >
+                      Edit
+                    </button>
+
+                    {/* View */}
+                    <button
+                      onClick={() => router.push(`/dashboard/blog-view?id=${b.id}`)}
+                      className="px-3 py-1 bg-purple-500 hover:bg-purple-600 text-white rounded text-sm"
+                    >
+                      View
+                    </button>
+
+                    {/* Publish */}
+                    {b.status !== "published" && (
+                      <button
+                        className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white rounded text-sm"
+                        onClick={() => handlePublish(b.id)}
+                      >
+                        Publish Now
+                      </button>
+                    )}
+
+                    {/* Reschedule */}
+                    {b.status === "scheduled" && (
+                      <button
+                        className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm"
+                        onClick={() => {
+                          const date = b.scheduledAt?.toDate();
+                          setNewDate(date ? date.toISOString().split('T')[0] : '');
+                          setNewTime(date ? date.toTimeString().substr(0,5) : '');
+                          setRescheduleModal({ open: true, id: b.id });
+                        }}
+                      >
+                        Reschedule
+                      </button>
+                    )}
+
+                    {/* Delete */}
+                    <button
+                      className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-sm"
+                      onClick={() => handleDelete(b.id)}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+
+            {!finalBlogs.length && (
+              <tr>
+                <td className="p-8 text-center text-gray-500" colSpan={5}>
+                  No blogs found
+                </td>
               </tr>
             )}
           </tbody>
         </table>
-      );
-    case "Image":
-      return block.url ? (
-        <img
-          key={idx}
-          src={block.url}
-          alt={block.alt}
-          style={{ maxWidth: "100%", borderRadius: 10, boxShadow: "0 2px 14px #99f6e4", margin: "16px 0" }}
-        />
-      ) : null;
-    case "Link":
-      return (
-        <a
-          key={idx}
-          href={block.href}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{
-            color: "#0ea5e9",
-            textDecoration: "underline",
-            fontWeight: 500,
-            fontSize: 17,
-            margin: "8px 0",
-            display: "inline-block"
-          }}
-        >
-          {block.text}
-        </a>
-      );
-    default:
-      return null;
-  }
-}
+      </div>
 
-export default function BlogList() {
-  const [blogs, setBlogs] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    async function fetchBlogs() {
-      setLoading(true);
-      const q = query(collection(db, "blogs-testing"), orderBy("date", "desc"));
-      const snapshot = await getDocs(q);
-      const data = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
-      setBlogs(data);
-      setLoading(false);
-    }
-    fetchBlogs();
-  }, []);
-
-  return (
-    <div style={{ maxWidth: 850, margin: "0 auto", padding: 24 }}>
-      <h1 style={{
-        fontSize: 36,
-        fontWeight: 800,
-        background: "linear-gradient(90deg,#d946ef,#06b6d4,#3b82f6)",
-        WebkitBackgroundClip: "text",
-        WebkitTextFillColor: "transparent",
-        marginBottom: 36,
-        textAlign: "center"
-      }}>
-        Latest Blogs
-      </h1>
-      {loading ? (
-        <div style={{ textAlign: "center", color: "#888" }}>Loading...</div>
-      ) : blogs.length === 0 ? (
-        <div style={{ textAlign: "center", color: "#888" }}>No blogs found.</div>
-      ) : (
-        blogs.map((blog) => (
-          <div
-            key={blog.id}
-            style={{
-              background: "#fff",
-              borderRadius: 16,
-              marginBottom: 32,
-              boxShadow: "0 4px 32px #e0e7ff55",
-              border: "1px solid #f5d0fe",
-              padding: 24,
-              position: "relative",
-            }}
+      {/* Pagination */}
+      <div className="flex justify-center mt-6">
+        {lastDoc && (
+          <button
+            className="px-6 py-2 bg-fuchsia-500 hover:bg-fuchsia-600 text-white rounded-lg shadow font-medium"
+            onClick={loadMore}
           >
-            <div style={{ display: "flex", alignItems: "flex-start", marginBottom: 16, gap: 20 }}>
-              {blog.image && (
-                <img
-                  src={blog.image}
-                  alt={blog.title}
-                  style={{ width: 180, height: 120, objectFit: "cover", borderRadius: 12, border: "2px solid #22d3ee" }}
+            Load More Blogs
+          </button>
+        )}
+      </div>
+
+      {/* Reschedule Modal */}
+      {rescheduleModal.open && (
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center z-50">
+          <div className="bg-white p-6 rounded-xl w-full max-w-md shadow-lg">
+            <h3 className="text-xl font-bold mb-4 text-gray-800">Reschedule Blog</h3>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">New Date</label>
+                <input 
+                  type="date" 
+                  className="w-full p-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  value={newDate} 
+                  onChange={(e) => setNewDate(e.target.value)}
                 />
-              )}
-              <div style={{ flex: 1 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <span style={{
-                    fontSize: 22, fontWeight: 700, color: "#a21caf"
-                  }}>{blog.title}</span>
-                  {blog.trending && (
-                    <span style={{
-                      background: "#f0abfc", color: "#86198f",
-                      fontWeight: 600, fontSize: 12,
-                      borderRadius: 6, padding: "2px 10px", marginLeft: 8
-                    }}>Trending</span>
-                  )}
-                </div>
-                <div style={{ color: "#334155", fontSize: 15, marginTop: 2, marginBottom: 6 }}>
-                  {blog.summary}
-                </div>
-                <div style={{ display: "flex", gap: 12, alignItems: "center", fontSize: 13, marginBottom: 4 }}>
-                  <span style={{ background: "#f1f5f9", color: "#0891b2", borderRadius: 3, padding: "2px 7px" }}>
-                    {blog.category}
-                  </span>
-                  <span style={{ color: "#888" }}>
-                    {blog.date && blog.date.toDate
-                      ? blog.date.toDate().toLocaleDateString()
-                      : ""}
-                  </span>
-                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">New Time</label>
+                <input 
+                  type="time" 
+                  className="w-full p-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  value={newTime} 
+                  onChange={(e) => setNewTime(e.target.value)}
+                />
               </div>
             </div>
-            {/* Render blog content blocks */}
-            <div style={{
-              fontFamily: "ui-sans-serif, system-ui, sans-serif",
-              color: "#1e293b",
-              maxWidth: 700,
-              lineHeight: 1.7,
-              margin: "0 auto"
-            }}>
-              {(blog.content || []).map(renderBlock)}
+
+            <div className="flex gap-3 mt-6">
+              <button 
+                className="flex-1 bg-green-600 hover:bg-green-700 text-white py-2 rounded font-medium"
+                onClick={applyReschedule}
+              >
+                Save Schedule
+              </button>
+              <button 
+                className="flex-1 bg-gray-500 hover:bg-gray-600 text-white py-2 rounded font-medium"
+                onClick={() => setRescheduleModal({ open: false, id: null })}
+              >
+                Cancel
+              </button>
             </div>
           </div>
-        ))
+        </div>
       )}
     </div>
   );

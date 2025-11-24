@@ -20,13 +20,7 @@ export default function DashboardLayout({ children }) {
           {children}
         </main>
 
-        {/* Right Ad Section - only visible on lg and above */}
-        <div className="hidden lg:block w-[200px] bg-gray-50 p-4">
-          {/* Replace below with your ad component or content */}
-          <div className="h-full border border-dashed border-gray-400 text-center text-gray-600">
-            Ad Space
-          </div>
-        </div>
+       
       </div>
     </>
   );

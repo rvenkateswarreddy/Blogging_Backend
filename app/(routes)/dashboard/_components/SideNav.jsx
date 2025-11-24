@@ -76,17 +76,7 @@ const SideNav = () => {
   const sidebarContent = (
     <div className="flex flex-col justify-between h-full">
       <div>
-        <div className="py-8 flex flex-col items-center gap-2">
-          <div className="w-20 h-20 rounded-full overflow-hidden border-4 border-fuchsia-400 shadow-lg flex items-center justify-center bg-white">
-            <Image
-              src="/assets/ERRTEKNALOZY.jpg"
-              alt="Logo"
-              width={80}
-              height={80}
-              className="object-cover w-full h-full"
-              priority
-            />
-          </div>
+        <div className="py-8 flex flex-col items-center gap-2">  
           <span className="font-extrabold text-xl bg-gradient-to-r from-fuchsia-500 via-cyan-400 to-blue-500 bg-clip-text text-transparent tracking-wider drop-shadow-md">
           TALENT WITH US
           </span>
